@@ -1,0 +1,20 @@
+# venv
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# runtime artifacts
+traces/
+*.jsonl
+!tests/**/*.jsonl
+
+# secrets — never commit keys
+*.key
+.env
