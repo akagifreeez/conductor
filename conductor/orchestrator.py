@@ -53,6 +53,15 @@ def conductor_summary(ledger: Ledger) -> dict:
         s.pop(k, None)
     return s
 
+
+def ledger_cost_usd(ledger: Ledger) -> float:
+    """Cumulative cost recorded in ``ledger`` so far (across all runs sharing it).
+
+    Used for budget enforcement: with a ledger shared across agents, this is the
+    global spend, so a budget checked against it is a global ceiling.
+    """
+    return sum(r.cost_usd for r in ledger.rows)
+
 DEFAULT_SYSTEM = (
     "You are a helpful assistant with access to tools. Use a tool when it helps "
     "answer the user's request, then give a concise final answer."
@@ -65,7 +74,7 @@ class RunResult:
 
     final_text: str
     steps: int
-    status: str           # "completed" | "max_steps"
+    status: str           # "completed" | "max_steps" | "budget_exceeded" | "error"
     trace_path: str
     ledger_summary: dict
 
@@ -90,6 +99,7 @@ class Orchestrator:
         ledger: Optional[Ledger] = None,
         max_tokens: int = 1024,
         sandbox: Optional["Sandbox"] = None,
+        budget_usd: Optional[float] = None,
     ) -> None:
         self.backend = backend
         self.registry = registry
@@ -98,6 +108,10 @@ class Orchestrator:
         self.max_steps = max(1, int(max_steps))
         self.trace_dir = trace_dir
         self.max_tokens = max_tokens
+        # A hard cost ceiling checked BETWEEN steps. With a ledger shared across
+        # agents this is a global budget (see Coordinator). A single in-flight
+        # step can overshoot by its own cost - the ceiling stops *further* work.
+        self.budget_usd = budget_usd
         # When a sandbox is given, the orchestrator owns its lifecycle (setup at
         # run start, teardown in finally) and wires the registry's dangerous-tool
         # gate to dispatch through it. Without one, dangerous tools stay blocked.
@@ -159,6 +173,10 @@ class Orchestrator:
                     self.sandbox.setup()
                     self._trace_sandbox(tracer, "setup")
                 for step in range(self.max_steps):
+                    # Budget ceiling: stop before spending more once we're at/over it.
+                    if self.budget_usd is not None and ledger_cost_usd(self.ledger) >= self.budget_usd:
+                        status = "budget_exceeded"
+                        break
                     steps = step + 1
                     tracer.llm_request(
                         step=steps,

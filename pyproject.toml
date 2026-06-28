@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "conductor-cp"
-version = "0.2.0"
+version = "0.3.0"
 description = "A vendor-neutral, self-hosted control plane for LLM agents: one provider-agnostic tool-use loop (Claude + any OpenAI-compatible API + local Ollama), with JSONL tracing and a per-provider cost ledger."
 readme = "README.md"
 requires-python = ">=3.9"

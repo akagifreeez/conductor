@@ -7,13 +7,13 @@ SDK), any OpenAI-compatible API (OpenAI / OpenRouter / Groq / Mistral / Together
 / Fireworks), or a local model (Ollama / LM Studio / vLLM) — behind a single
 neutral interface, with **JSONL tracing** and a **per-provider cost ledger**.
 
-> **Status: v1.** v0's provider-agnostic loop + tracing + per-provider ledger are
-> joined by the three v1 pieces: a **sandbox** that runs dangerous tools in
-> isolation with snapshot/rollback, **deterministic replay** of a recorded run,
-> and a **local→remote cost cascade**. All are verified offline (unit tests + the
-> `sandbox-demo` / `replay` commands); the real OS-isolation backend
-> (`ProxmoxSandbox`) ships for you to run on your own Proxmox node. This README
-> states what is verified offline vs. what needs your homelab.
+> **Status: v2.** v0 (provider-agnostic loop + tracing + per-provider ledger) and
+> v1 (sandbox isolation with snapshot/rollback, deterministic replay, local→remote
+> cost cascade) are joined by v2: **multi-agent coordination under one shared cost
+> budget**. Everything is verified offline (unit tests + the `demo` / `sandbox-demo`
+> / `replay` / `multi-demo` commands); the real OS-isolation backend
+> (`ProxmoxSandbox`) ships with a one-command live check (`proxmox-check`) for your
+> own node. This README states what is verified offline vs. what needs your homelab.
 
 ---
 
@@ -141,6 +141,39 @@ Orchestrator(backend, reg, run_id="job", sandbox=sandbox).run("...")
 
 `pip install 'conductor-cp[proxmox]'` (proxmoxer + paramiko) for that backend.
 
+#### Verify it on a real Proxmox node (one command)
+
+`conductor proxmox-check` runs a live snapshot → destructive command → rollback
+cycle inside a real LXC and prints PASS/FAIL — the homelab counterpart to
+`sandbox-demo`. It uses the *same* `sandbox_selfcheck` routine the offline suite
+tests against `SubprocessSandbox`, so the verification logic is already proven;
+this just points it at real hardware.
+
+```bash
+pip install 'conductor-cp[proxmox]'
+export PROXMOX_HOST=192.168.1.10  PROXMOX_USER=root@pam
+export PROXMOX_TOKEN_NAME=conductor  PROXMOX_TOKEN_VALUE=xxxxxxxx
+export PROXMOX_NODE=pve  PROXMOX_SSH_HOST=192.168.1.10   # SSH for `pct exec`
+
+conductor proxmox-check --vmid 210                # use an existing LXC, or:
+conductor proxmox-check --vmid 9001 --template 9000   # clone a template, destroy after
+```
+
+Expected tail on success:
+
+```
+  [PASS] seed marker
+  [PASS] snapshot
+  [PASS] marker gone after destroy (contained)
+  [PASS] rollback
+  [PASS] marker restored after rollback
+
+PASS: sandbox snapshot/rollback self-check
+```
+
+Requires an SSH-reachable node (root) and a Linux LXC. This is the one step that
+needs your homelab; everything else in this README is verified offline.
+
 ### Deterministic replay
 
 ```bash
@@ -161,6 +194,39 @@ Claude) when a confidence gate fails — recording **both** attempts in the ledg
 so the per-provider split shows exactly what went local vs. remote. The default
 gate is a small heuristic (made progress / non-hedging answer?), not a learned
 router; pass your own.
+
+## What's new in v2 — many agents, one budget
+
+```bash
+conductor multi-demo
+```
+
+A control plane should bound the combined spend of *several* agents, not just
+each one in isolation. The `Coordinator` runs a list of agent jobs against a
+single shared ledger and a single global `budget_usd`; once the budget is
+reached, remaining agents are **skipped before they start**:
+
+```
+   agent0: completed
+   agent1: completed
+   agent2: completed
+   agent3: skipped (budget exhausted)
+   ...
+ran=3  skipped=3  total=$0.001815  budget=$0.001512
+```
+
+Honest bound (stated, not hidden): the ceiling stops *further* work, so a single
+in-flight step can overshoot by its own cost — the total may exceed the budget by
+at most the most-expensive single step.
+
+```python
+from conductor import Coordinator, Job
+result = Coordinator(budget_usd=0.50).run_all([
+    Job(label="a", backend=b1, registry=r, task="..."),
+    Job(label="b", backend=b2, registry=r, task="..."),
+])
+# result.ran / result.skipped / result.total_cost_usd / result.ledger_summary
+```
 
 ## Install
 
@@ -211,13 +277,15 @@ conductor run --provider local --model qwen2.5:3b-instruct --task "..."
 - **v0 (done):** provider-agnostic tool-use loop · Anthropic + OpenAI-compat +
   local + scripted backends · JSONL tracing · per-provider cost ledger · sandbox
   gate (declared).
-- **v1 (this release):** sandbox executor (`ProxmoxSandbox` real OS isolation +
+- **v1 (done):** sandbox executor (`ProxmoxSandbox` real OS isolation +
   `SubprocessSandbox` offline double) so dangerous tools run isolated and roll
   back · local→remote cost cascade · deterministic replay of a recorded trace ·
-  `sandbox-demo` / `replay` commands. *Pending your homelab:* a live end-to-end
-  run on a real Proxmox node (the offline double proves the contract).
-- **v2 (one of):** multi-agent coordination with a shared budget · microVM
-  (KVM/Firecracker) comparison · a lightweight web dashboard.
+  `sandbox-demo` / `replay` / `proxmox-check` commands.
+- **v2 (this release):** multi-agent coordination under one shared cost budget
+  (`Coordinator`, `multi-demo`). *Pending your homelab:* the live `proxmox-check`
+  run on a real Proxmox node (the offline double + self-check prove the contract).
+- **Later (one of):** microVM (KVM/Firecracker) comparison · a lightweight web
+  dashboard over traces/ledger.
 
 ## Tech
 

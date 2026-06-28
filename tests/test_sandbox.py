@@ -156,3 +156,37 @@ def test_proxmox_sandbox_unconfigured_raises():
     # No proxmoxer installed / no creds -> a clear RuntimeError, never a silent hang.
     with pytest.raises(RuntimeError):
         sb.setup()
+
+
+# --- sandbox_selfcheck: the harness proxmox-check reuses, proven offline ----
+
+def test_sandbox_selfcheck_passes_on_subprocess_double():
+    from conductor.sandbox import sandbox_selfcheck
+    marker, absent = "conductor-selfcheck-OK", "__ABSENT__"
+    # Portable commands using a fixed filename m.t inside the box (cwd = box).
+    seed = f'"{PY}" -c "open(\'m.t\',\'w\').write(\'{marker}\'); print(open(\'m.t\').read())"'
+    destroy = f'"{PY}" -c "import os; os.remove(\'m.t\')"'
+    probe = f'"{PY}" -c "import os; print(open(\'m.t\').read() if os.path.exists(\'m.t\') else \'{absent}\')"'
+    report = sandbox_selfcheck(
+        SubprocessSandbox(), seed_cmd=seed, destroy_cmd=destroy, probe_cmd=probe,
+        marker=marker, absent=absent,
+    )
+    assert report.passed is True, report.format()
+    names = [s[0] for s in report.steps]
+    assert "marker restored after rollback" in names
+    assert all(ok for n, ok, _ in report.steps)
+
+
+def test_sandbox_selfcheck_reports_failure_without_crashing():
+    from conductor.sandbox import sandbox_selfcheck
+    # A destroy command that does nothing -> marker NOT gone -> selfcheck fails,
+    # but returns a report (never raises).
+    marker, absent = "MK", "__ABSENT__"
+    seed = f'"{PY}" -c "open(\'m.t\',\'w\').write(\'{marker}\'); print(open(\'m.t\').read())"'
+    noop = f'"{PY}" -c "pass"'
+    probe = f'"{PY}" -c "import os; print(open(\'m.t\').read() if os.path.exists(\'m.t\') else \'{absent}\')"'
+    report = sandbox_selfcheck(
+        SubprocessSandbox(), seed_cmd=seed, destroy_cmd=noop, probe_cmd=probe,
+        marker=marker, absent=absent,
+    )
+    assert report.passed is False  # marker never "gone", so containment step fails

@@ -18,6 +18,12 @@ Subcommands:
 
 * ``conductor replay`` - re-run a recorded trace deterministically, reproducing
   its tool I/O and final answer (no provider calls, no tool side effects).
+
+* ``conductor multi-demo`` - the offline v2 proof: many agents share ONE cost
+  budget; once it's spent, remaining agents are skipped (global ceiling).
+
+* ``conductor proxmox-check`` - LIVE verification on a real Proxmox node: snapshot
+  -> destructive command -> rollback inside an LXC, printing PASS/FAIL.
 """
 from __future__ import annotations
 
@@ -32,7 +38,8 @@ from token_router.accounting import Ledger
 
 from .backends.base import AgentBackend
 from .backends.scripted import ScriptedBackend, ScriptedTurn
-from .orchestrator import Orchestrator, conductor_summary
+from .coordinator import Coordinator, Job
+from .orchestrator import Orchestrator, conductor_summary, ledger_cost_usd
 from .pricing import make_pricing
 from .replay import load_trace, replay_trace
 from .sandbox import SubprocessSandbox
@@ -219,6 +226,76 @@ def cmd_sandbox_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_multi_demo(args: argparse.Namespace) -> int:
+    """Offline v2 proof: many agents share ONE budget; later agents are cut off."""
+    def make_agent(i: int) -> ScriptedBackend:
+        return ScriptedBackend(
+            [ScriptedTurn(text=f"Agent {i} completed its task with a reasonably detailed answer.")],
+            name="claude-opus-4-8", backend="anthropic",
+        )
+
+    def make_reg() -> ToolRegistry:
+        r = ToolRegistry()
+        for t in READONLY_TOOLS:
+            r.register(t)
+        return r
+
+    task = "Summarize the assigned task."
+    # Measure one agent's cost so the demo budget is meaningful regardless of
+    # token-estimate specifics, then set a budget that admits ~2-3 of N agents.
+    probe = Ledger(pricing=make_pricing())
+    Orchestrator(make_agent(0), make_reg(), run_id=_run_id("probe"),
+                 trace_dir=args.trace_dir, ledger=probe).run(task)
+    per_agent = ledger_cost_usd(probe)
+    probe.close()
+    budget = args.budget if args.budget is not None else round(2.5 * per_agent, 8) or 1e-4
+
+    n = args.agents
+    jobs = [Job(label=f"agent{i}", backend=make_agent(i), registry=make_reg(), task=task)
+            for i in range(n)]
+    coord = Coordinator(budget_usd=budget, trace_dir=args.trace_dir)
+    result = coord.run_all(jobs)
+
+    print(f"{n} agents share ONE budget of ${budget:.6f} "
+          f"(~${per_agent:.6f}/agent) - offline\n")
+    for o in result.outcomes:
+        note = "skipped (budget exhausted)" if o.status == "skipped_budget" else o.status
+        print(f"  {o.label:>8}: {note}")
+    print(f"\nran={len(result.ran)}  skipped={len(result.skipped)}  "
+          f"total=${result.total_cost_usd:.6f}  budget=${budget:.6f}")
+    print(format_ledger(result.ledger_summary))
+    print(
+        "\nThe shared budget capped total agent spend: once it was reached, "
+        "remaining agents were skipped before starting (a single in-flight step "
+        "can overshoot by its own cost; the ceiling stops further work)."
+    )
+    return 0
+
+
+def cmd_proxmox_check(args: argparse.Namespace) -> int:
+    """Live verification on a REAL Proxmox node: snapshot/destroy/rollback an LXC.
+
+    Run this on your homelab. It needs `conductor-cp[proxmox]` (proxmoxer +
+    paramiko), the PROXMOX_* env vars, and an LXC (existing --vmid, or --template
+    to clone). It uses the same sandbox_selfcheck logic the offline suite tests.
+    """
+    from .sandbox import ProxmoxSandbox, posix_commands, sandbox_selfcheck
+
+    sandbox = ProxmoxSandbox(
+        vmid=args.vmid,
+        node=args.node,
+        template_vmid=args.template,
+    )
+    # Default marker path is on the rootfs (/root); override if your CT differs.
+    cmds = posix_commands(path=args.path) if args.path else posix_commands()
+    print(f"Proxmox live self-check: vmid={args.vmid} node={args.node or '(env PROXMOX_NODE)'}\n")
+    report = sandbox_selfcheck(sandbox, **cmds)
+    print(report.format())
+    if report.error and ("proxmoxer" in report.error or "paramiko" in report.error):
+        print("\nInstall the extra:  pip install 'conductor-cp[proxmox]'")
+    return 0 if report.passed else 1
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     """Re-run a recorded trace deterministically and report the match."""
     res, cmp = replay_trace(args.trace, run_id=_run_id("replay"), trace_dir=args.trace_dir)
@@ -273,6 +350,27 @@ def build_parser() -> argparse.ArgumentParser:
     prp.add_argument("--trace", required=True, help="path to a run-*.jsonl trace")
     prp.add_argument("--trace-dir", default="traces", help="where to write the replay trace")
     prp.set_defaults(func=cmd_replay)
+
+    pmd = sub.add_parser(
+        "multi-demo",
+        help="offline v2 proof: many agents share one budget; later agents cut off",
+    )
+    pmd.add_argument("--agents", type=int, default=6, help="number of agents")
+    pmd.add_argument("--budget", type=float, default=None, help="shared budget USD (default: ~2.5 agents)")
+    pmd.add_argument("--trace-dir", default="traces")
+    pmd.set_defaults(func=cmd_multi_demo)
+
+    ppx = sub.add_parser(
+        "proxmox-check",
+        help="LIVE verification on a real Proxmox node (snapshot/destroy/rollback an LXC)",
+    )
+    ppx.add_argument("--vmid", type=int, required=True, help="LXC id to run the check in")
+    ppx.add_argument("--node", default=None, help="Proxmox node (or env PROXMOX_NODE)")
+    ppx.add_argument("--template", type=int, default=None,
+                     help="optional template vmid to clone a fresh CT from (destroyed after)")
+    ppx.add_argument("--path", default=None,
+                     help="marker file path inside the CT (default /root/...; avoid tmpfs /tmp)")
+    ppx.set_defaults(func=cmd_proxmox_check)
 
     return p
 

@@ -23,9 +23,23 @@ from .backends.base import (
 )
 from .backends.scripted import ScriptedBackend, ScriptedTurn
 from .backends.cascade import CascadeBackend, default_gate
-from .orchestrator import DEFAULT_SYSTEM, Orchestrator, RunResult, conductor_summary
+from .orchestrator import (
+    DEFAULT_SYSTEM,
+    Orchestrator,
+    RunResult,
+    conductor_summary,
+    ledger_cost_usd,
+)
+from .coordinator import Coordinator, CoordinatorResult, Job, JobOutcome
 from .replay import replay_trace
-from .sandbox import ExecResult, ProxmoxSandbox, Sandbox, SandboxExecutor, SubprocessSandbox
+from .sandbox import (
+    ExecResult,
+    ProxmoxSandbox,
+    Sandbox,
+    SandboxExecutor,
+    SubprocessSandbox,
+    sandbox_selfcheck,
+)
 from .tools import (
     READONLY_TOOLS,
     SANDBOX_TOOLS,
@@ -35,7 +49,7 @@ from .tools import (
 )
 from .tracer import Tracer
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "AgentBackend",
@@ -52,12 +66,18 @@ __all__ = [
     "Orchestrator",
     "RunResult",
     "conductor_summary",
+    "ledger_cost_usd",
     "DEFAULT_SYSTEM",
+    "Coordinator",
+    "CoordinatorResult",
+    "Job",
+    "JobOutcome",
     "replay_trace",
     "Sandbox",
     "SandboxExecutor",
     "SubprocessSandbox",
     "ProxmoxSandbox",
+    "sandbox_selfcheck",
     "ExecResult",
     "Tool",
     "ToolRegistry",
