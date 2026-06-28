@@ -11,11 +11,12 @@ neutral interface, with **JSONL tracing** and a **per-provider cost ledger**.
 > v1 (sandbox isolation with snapshot/rollback, deterministic replay, local→remote
 > cost cascade) are joined by v2: **multi-agent coordination under one shared cost
 > budget**. Everything is verified offline (unit tests + the `demo` / `sandbox-demo`
-> / `replay` / `multi-demo` commands), **and the OS isolation has been run live on a
-> real Proxmox VE 9.1 LXC** (`proxmox-check` → snapshot → destructive command →
-> rollback restored the marker, host untouched; the throwaway CT was destroyed
-> after). So the headline "OS isolation × cost ledger × deterministic replay" is
-> proven, not just claimed.
+> / `replay` / `multi-demo` commands), **and the OS isolation has been run live on
+> TWO real backends — a Docker container AND a Proxmox VE 9.1 LXC** (snapshot →
+> destructive command → rollback restored the marker, resources destroyed after).
+> The isolation layer is a pluggable `Sandbox` interface, **not** Proxmox-specific.
+> So the headline "OS isolation × cost ledger × deterministic replay" is proven,
+> not just claimed.
 
 ---
 
@@ -38,25 +39,27 @@ than buried:
   one `OpenAICompatAdapter` for every OpenAI-compatible endpoint (incl. local).
 - **The differentiator is the *combination*, not orchestration alone.**
   Orchestrators are a crowded space; the moat is **OS isolation × cost ledger ×
-  deterministic replay** together. As of v1 all three exist (the OS-isolation
-  backend is verified by you on a real node — see below).
+  deterministic replay** together — all three exist and the isolation is verified
+  live on real Docker and real Proxmox (see below).
 - **"Deterministic replay" = reproducing recorded I/O**, not re-running the LLM
   bit-for-bit. LLM outputs are not deterministic; the *trace* is. `conductor
   replay <trace>` re-drives the loop from a trace and reproduces its tool I/O and
   final answer (no provider calls, no tool side effects).
-- **Dangerous tools are gated, and now executed in a sandbox with rollback.** The
-  registry refuses a `dangerous` tool unless a sandbox is wired in. Two sandbox
-  backends, at different honesty tiers:
-  - `ProxmoxSandbox` — **real OS-level isolation** in a Proxmox LXC (snapshot /
-    `pct exec` / rollback, mirroring the author's
-    [proxmoxbot](https://github.com/akagifreeez/proxmoxbot)). This is the real
-    differentiator; it needs a live Proxmox node and is **not** run by the
-    offline test suite — you verify it on your homelab.
-  - `SubprocessSandbox` — an **offline** double (temp-dir + copy-tree snapshot /
-    rollback). It really executes and really reverts, so it proves the
-    gate/snapshot/rollback *contract* without a node — but it is **NOT a security
-    boundary** (a command can still touch absolute paths). It is for tests and
-    the demo, not for containing hostile code.
+- **Dangerous tools are gated, and executed in a sandbox with rollback — across
+  pluggable backends.** The registry refuses a `dangerous` tool unless a sandbox
+  is wired in. The `Sandbox` interface is **not Proxmox-specific** — any backend
+  implementing `setup/snapshot/exec/rollback/teardown` plugs in:
+  | Backend | Isolation | Where | Status |
+  |---|---|---|---|
+  | `DockerSandbox` | container (shared kernel, **LXC tier — not a VM**) | anywhere Docker runs | **live PASS** + offline tests |
+  | `ProxmoxSandbox` / `ProxmoxSSHSandbox` | real OS-level (Proxmox LXC) | a Proxmox node (API token, or SSH/`pct` — no token, fits Tailscale SSH) | **live PASS** + offline tests |
+  | `SubprocessSandbox` | **NOT a security boundary** (temp-dir + copy-tree) | anywhere | offline only (proves the *contract*) |
+
+  Honest tiering: Docker and Proxmox LXC are container-grade isolation (shared
+  host kernel) — contained and revertible, but not a hardened boundary against a
+  kernel exploit; a microVM/KVM backend (future) would be that. `SubprocessSandbox`
+  is explicitly not a boundary at all (it's for tests/demos). All three honor the
+  same self-check (`conductor sandbox-check --backend ...`).
 - **AI = existing provider APIs only.** No model is trained or fine-tuned here.
   No claim that "the AI learns/predicts." Pricing figures for Claude are
   Anthropic's published per-token rates; OpenAI-family figures are approximate.
@@ -126,7 +129,16 @@ files             after rollback: ['important.txt']   ← restored
 
 The command runs against the sandbox box, never the host cwd, and is fully
 revertible. Offline this uses `SubprocessSandbox` (filesystem snapshot, *not* a
-security boundary). For real OS isolation, point it at your Proxmox node:
+security boundary).
+
+**For real isolation with zero homelab — Docker** (one command; auto-pulls the image):
+
+```bash
+conductor sandbox-check --backend docker            # snapshot → destroy → rollback in a container
+# (the same self-check also runs --backend subprocess / --backend proxmox-ssh)
+```
+
+Or point it at your Proxmox node:
 
 ```python
 from conductor import Orchestrator, ToolRegistry, SANDBOX_TOOLS

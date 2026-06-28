@@ -272,6 +272,59 @@ def cmd_multi_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sandbox_check(args: argparse.Namespace) -> int:
+    """Run the snapshot/rollback self-check against ANY sandbox backend.
+
+    Demonstrates that the isolation layer is not Proxmox-specific: the same
+    sandbox_selfcheck routine runs against the offline double, a Docker container,
+    or a Proxmox LXC over SSH.
+    """
+    from .sandbox import posix_commands, sandbox_selfcheck
+
+    backend = args.backend
+    if backend == "subprocess":
+        from .sandbox import SubprocessSandbox
+
+        sandbox = SubprocessSandbox()
+        # Portable file ops via the running interpreter (the box is a temp dir).
+        py = sys.executable
+        marker, absent = "conductor-selfcheck-OK", "__ABSENT__"
+        cmds = {
+            "seed_cmd": f'"{py}" -c "open(\'m.t\',\'w\').write(\'{marker}\'); print(open(\'m.t\').read())"',
+            "destroy_cmd": f'"{py}" -c "import os; os.remove(\'m.t\')"',
+            "probe_cmd": f'"{py}" -c "import os; print(open(\'m.t\').read() if os.path.exists(\'m.t\') else \'{absent}\')"',
+            "marker": marker,
+            "absent": absent,
+        }
+        where = "subprocess (NOT a security boundary)"
+    elif backend == "docker":
+        from .sandbox import DockerSandbox
+
+        sandbox = DockerSandbox(image=args.image)
+        cmds = posix_commands(path=args.path) if args.path else posix_commands()
+        where = f"docker image={args.image}"
+    elif backend == "proxmox-ssh":
+        from .sandbox import ProxmoxSSHSandbox
+
+        if not (args.ssh_host and args.vmid):
+            raise SystemExit("proxmox-ssh backend needs --ssh-host and --vmid")
+        sandbox = ProxmoxSSHSandbox(
+            vmid=args.vmid, host=args.ssh_host, ssh_user=args.ssh_user,
+            template_volume=args.template_volume,
+        )
+        cmds = posix_commands(path=args.path) if args.path else posix_commands()
+        where = f"proxmox-lxc {args.ssh_user}@{args.ssh_host} vmid={args.vmid}"
+    else:  # pragma: no cover
+        raise SystemExit(f"unknown backend: {backend}")
+
+    print(f"Sandbox self-check [{backend}] via {where}\n")
+    report = sandbox_selfcheck(sandbox, **cmds)
+    print(report.format())
+    if report.error and ("docker" in report.error.lower() and backend == "docker"):
+        print("\nIs the Docker daemon running?  (Docker Desktop / `dockerd`)")
+    return 0 if report.passed else 1
+
+
 def cmd_proxmox_check(args: argparse.Namespace) -> int:
     """Live verification on a REAL Proxmox node: snapshot/destroy/rollback an LXC.
 
@@ -374,6 +427,21 @@ def build_parser() -> argparse.ArgumentParser:
     pmd.add_argument("--budget", type=float, default=None, help="shared budget USD (default: ~2.5 agents)")
     pmd.add_argument("--trace-dir", default="traces")
     pmd.set_defaults(func=cmd_multi_demo)
+
+    psc = sub.add_parser(
+        "sandbox-check",
+        help="run the snapshot/rollback self-check against any backend (subprocess/docker/proxmox-ssh)",
+    )
+    psc.add_argument("--backend", required=True,
+                     choices=["subprocess", "docker", "proxmox-ssh"])
+    psc.add_argument("--image", default="alpine:3", help="(docker) image to use")
+    psc.add_argument("--vmid", type=int, default=None, help="(proxmox-ssh) LXC id")
+    psc.add_argument("--ssh-host", default=None, help="(proxmox-ssh) node host")
+    psc.add_argument("--ssh-user", default="root", help="(proxmox-ssh) ssh user")
+    psc.add_argument("--template-volume", default=None,
+                     help="(proxmox-ssh) template to create a throwaway CT from")
+    psc.add_argument("--path", default=None, help="marker file path inside the sandbox")
+    psc.set_defaults(func=cmd_sandbox_check)
 
     ppx = sub.add_parser(
         "proxmox-check",

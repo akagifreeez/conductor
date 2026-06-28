@@ -33,6 +33,7 @@ from .orchestrator import (
 from .coordinator import Coordinator, CoordinatorResult, Job, JobOutcome
 from .replay import replay_trace
 from .sandbox import (
+    DockerSandbox,
     ExecResult,
     ProxmoxSandbox,
     ProxmoxSSHSandbox,
@@ -50,7 +51,7 @@ from .tools import (
 )
 from .tracer import Tracer
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     "AgentBackend",
@@ -77,6 +78,7 @@ __all__ = [
     "Sandbox",
     "SandboxExecutor",
     "SubprocessSandbox",
+    "DockerSandbox",
     "ProxmoxSandbox",
     "ProxmoxSSHSandbox",
     "sandbox_selfcheck",
