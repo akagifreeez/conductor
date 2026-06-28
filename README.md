@@ -11,9 +11,11 @@ neutral interface, with **JSONL tracing** and a **per-provider cost ledger**.
 > v1 (sandbox isolation with snapshot/rollback, deterministic replay, local→remote
 > cost cascade) are joined by v2: **multi-agent coordination under one shared cost
 > budget**. Everything is verified offline (unit tests + the `demo` / `sandbox-demo`
-> / `replay` / `multi-demo` commands); the real OS-isolation backend
-> (`ProxmoxSandbox`) ships with a one-command live check (`proxmox-check`) for your
-> own node. This README states what is verified offline vs. what needs your homelab.
+> / `replay` / `multi-demo` commands), **and the OS isolation has been run live on a
+> real Proxmox VE 9.1 LXC** (`proxmox-check` → snapshot → destructive command →
+> rollback restored the marker, host untouched; the throwaway CT was destroyed
+> after). So the headline "OS isolation × cost ledger × deterministic replay" is
+> proven, not just claimed.
 
 ---
 
@@ -141,7 +143,7 @@ Orchestrator(backend, reg, run_id="job", sandbox=sandbox).run("...")
 
 `pip install 'conductor-cp[proxmox]'` (proxmoxer + paramiko) for that backend.
 
-#### Verify it on a real Proxmox node (one command)
+#### Verify it on a real Proxmox node (one command) — done ✅
 
 `conductor proxmox-check` runs a live snapshot → destructive command → rollback
 cycle inside a real LXC and prints PASS/FAIL — the homelab counterpart to
@@ -149,30 +151,46 @@ cycle inside a real LXC and prints PASS/FAIL — the homelab counterpart to
 tests against `SubprocessSandbox`, so the verification logic is already proven;
 this just points it at real hardware.
 
+**This was run live** on a Proxmox VE 9.1 node: a throwaway debian-13 LXC was
+created, the cycle PASSed (marker contained after the destructive command,
+restored after rollback), and the CT was destroyed afterward — existing
+containers untouched.
+
+Two ways to connect:
+
 ```bash
 pip install 'conductor-cp[proxmox]'
+
+# A) SSH-only (no API token) — the natural fit for Tailscale SSH:
+conductor proxmox-check --ssh-host 100.100.1.1 --vmid 101 \
+  --template-volume local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst
+#   creates a throwaway CT 101, verifies, and destroys it. Omit --template-volume
+#   to use an existing (disposable!) CT instead.
+
+# B) Proxmox API token:
 export PROXMOX_HOST=192.168.1.10  PROXMOX_USER=root@pam
 export PROXMOX_TOKEN_NAME=conductor  PROXMOX_TOKEN_VALUE=xxxxxxxx
-export PROXMOX_NODE=pve  PROXMOX_SSH_HOST=192.168.1.10   # SSH for `pct exec`
-
-conductor proxmox-check --vmid 210                # use an existing LXC, or:
-conductor proxmox-check --vmid 9001 --template 9000   # clone a template, destroy after
+export PROXMOX_NODE=pve  PROXMOX_SSH_HOST=192.168.1.10
+conductor proxmox-check --vmid 210
 ```
 
-Expected tail on success:
+Observed tail on success:
 
 ```
-  [PASS] seed marker
-  [PASS] snapshot
-  [PASS] marker gone after destroy (contained)
-  [PASS] rollback
-  [PASS] marker restored after rollback
+  [PASS] setup - proxmox-lxc via ssh (real OS isolation)
+  [PASS] seed marker - conductor-selfcheck-OK
+  [PASS] snapshot (call ok) - token=cdr1_selfcheck
+  [PASS] destructive command
+  [PASS] marker gone after destroy (contained) - __ABSENT__
+  [PASS] rollback (call ok) - token=cdr1_selfcheck
+  [PASS] marker restored after rollback - conductor-selfcheck-OK
 
 PASS: sandbox snapshot/rollback self-check
 ```
 
-Requires an SSH-reachable node (root) and a Linux LXC. This is the one step that
-needs your homelab; everything else in this README is verified offline.
+> ⚠️ `proxmox-check` snapshots and **rolls back** the target CT — only point it at a
+> disposable container (or let `--template-volume` create a throwaway one). The SSH
+> sandbox only ever destroys a CT it created itself.
 
 ### Deterministic replay
 
@@ -282,16 +300,18 @@ conductor run --provider local --model qwen2.5:3b-instruct --task "..."
   back · local→remote cost cascade · deterministic replay of a recorded trace ·
   `sandbox-demo` / `replay` / `proxmox-check` commands.
 - **v2 (this release):** multi-agent coordination under one shared cost budget
-  (`Coordinator`, `multi-demo`). *Pending your homelab:* the live `proxmox-check`
-  run on a real Proxmox node (the offline double + self-check prove the contract).
+  (`Coordinator`, `multi-demo`); an SSH-only sandbox (`ProxmoxSSHSandbox`, no API
+  token — fits Tailscale SSH); **the live `proxmox-check` run on a real Proxmox VE
+  9.1 node — PASS** (the last remaining "needs a homelab" item, now done).
 - **Later (one of):** microVM (KVM/Firecracker) comparison · a lightweight web
   dashboard over traces/ledger.
 
 ## Tech
 
 Python · `requests` for the OpenAI-compatible path · official `anthropic` SDK
-(optional extra) for Claude · `proxmoxer` + `paramiko` (optional `[proxmox]`
-extra) for the real LXC sandbox · [token-router](https://github.com/akagifreeez/token-router)
+(optional extra) for Claude · real LXC sandbox via the Proxmox API (`proxmoxer` +
+`paramiko`, `[proxmox]` extra) **or** SSH-only `pct` (`ProxmoxSSHSandbox`, no
+token — works over Tailscale SSH) · [token-router](https://github.com/akagifreeez/token-router)
 for the `Usage`/`Ledger` accounting · no agent framework.
 
 ---

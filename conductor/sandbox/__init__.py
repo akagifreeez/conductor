@@ -2,6 +2,7 @@
 from .base import ExecResult, Sandbox, SandboxExecutor
 from .local import SubprocessSandbox
 from .proxmox import ProxmoxSandbox
+from .proxmox_ssh import ProxmoxSSHSandbox
 from .selfcheck import SelfCheckReport, posix_commands, sandbox_selfcheck
 
 __all__ = [
@@ -10,6 +11,7 @@ __all__ = [
     "SandboxExecutor",
     "SubprocessSandbox",
     "ProxmoxSandbox",
+    "ProxmoxSSHSandbox",
     "SelfCheckReport",
     "sandbox_selfcheck",
     "posix_commands",

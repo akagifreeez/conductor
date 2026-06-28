@@ -35,6 +35,7 @@ from .replay import replay_trace
 from .sandbox import (
     ExecResult,
     ProxmoxSandbox,
+    ProxmoxSSHSandbox,
     Sandbox,
     SandboxExecutor,
     SubprocessSandbox,
@@ -49,7 +50,7 @@ from .tools import (
 )
 from .tracer import Tracer
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "AgentBackend",
@@ -77,6 +78,7 @@ __all__ = [
     "SandboxExecutor",
     "SubprocessSandbox",
     "ProxmoxSandbox",
+    "ProxmoxSSHSandbox",
     "sandbox_selfcheck",
     "ExecResult",
     "Tool",

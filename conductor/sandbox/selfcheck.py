@@ -108,8 +108,10 @@ def sandbox_selfcheck(
     finally:
         try:
             sandbox.teardown()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 - surface cleanup failure, don't hide it
+            # A teardown failure (e.g. a leaked throwaway CT) must be visible even
+            # under a PASS verdict, rather than silently swallowed.
+            report.add("teardown", False, f"{type(e).__name__}: {e}")
     return report
 
 

@@ -279,16 +279,31 @@ def cmd_proxmox_check(args: argparse.Namespace) -> int:
     paramiko), the PROXMOX_* env vars, and an LXC (existing --vmid, or --template
     to clone). It uses the same sandbox_selfcheck logic the offline suite tests.
     """
-    from .sandbox import ProxmoxSandbox, posix_commands, sandbox_selfcheck
+    from .sandbox import posix_commands, sandbox_selfcheck
 
-    sandbox = ProxmoxSandbox(
-        vmid=args.vmid,
-        node=args.node,
-        template_vmid=args.template,
-    )
+    if args.ssh_host:
+        # SSH-only path (no API token) - the natural fit for Tailscale SSH.
+        from .sandbox import ProxmoxSSHSandbox
+
+        sandbox = ProxmoxSSHSandbox(
+            vmid=args.vmid,
+            host=args.ssh_host,
+            ssh_user=args.ssh_user,
+            template_volume=args.template_volume,
+        )
+        where = f"{args.ssh_user}@{args.ssh_host} (ssh/pct)"
+    else:
+        from .sandbox import ProxmoxSandbox
+
+        sandbox = ProxmoxSandbox(
+            vmid=args.vmid,
+            node=args.node,
+            template_vmid=args.template,
+        )
+        where = f"node={args.node or '(env PROXMOX_NODE)'} (api)"
     # Default marker path is on the rootfs (/root); override if your CT differs.
     cmds = posix_commands(path=args.path) if args.path else posix_commands()
-    print(f"Proxmox live self-check: vmid={args.vmid} node={args.node or '(env PROXMOX_NODE)'}\n")
+    print(f"Proxmox live self-check: vmid={args.vmid} via {where}\n")
     report = sandbox_selfcheck(sandbox, **cmds)
     print(report.format())
     if report.error and ("proxmoxer" in report.error or "paramiko" in report.error):
@@ -367,9 +382,15 @@ def build_parser() -> argparse.ArgumentParser:
     ppx.add_argument("--vmid", type=int, required=True, help="LXC id to run the check in")
     ppx.add_argument("--node", default=None, help="Proxmox node (or env PROXMOX_NODE)")
     ppx.add_argument("--template", type=int, default=None,
-                     help="optional template vmid to clone a fresh CT from (destroyed after)")
+                     help="(API mode) template vmid to clone a fresh CT from (destroyed after)")
     ppx.add_argument("--path", default=None,
                      help="marker file path inside the CT (default /root/...; avoid tmpfs /tmp)")
+    ppx.add_argument("--ssh-host", default=None,
+                     help="run via SSH `pct` instead of the API (no token; e.g. Tailscale SSH host)")
+    ppx.add_argument("--ssh-user", default="root", help="SSH user for --ssh-host (default root)")
+    ppx.add_argument("--template-volume", default=None,
+                     help="(SSH mode) template to `pct create` a throwaway CT from, "
+                          "e.g. local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst (destroyed after)")
     ppx.set_defaults(func=cmd_proxmox_check)
 
     return p
