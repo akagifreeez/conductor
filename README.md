@@ -7,11 +7,13 @@ SDK), any OpenAI-compatible API (OpenAI / OpenRouter / Groq / Mistral / Together
 / Fireworks), or a local model (Ollama / LM Studio / vLLM) — behind a single
 neutral interface, with **JSONL tracing** and a **per-provider cost ledger**.
 
-> **Status: v0.** The provider-agnostic loop, tracing, and the per-provider cost
-> ledger are built and verified offline (scripted backend + unit tests). The OS
-> isolation (Proxmox sandbox), the cost-cascade router, and deterministic replay
-> are planned for v1 — see [Roadmap](#roadmap). This README states what works
-> today and what does not.
+> **Status: v1.** v0's provider-agnostic loop + tracing + per-provider ledger are
+> joined by the three v1 pieces: a **sandbox** that runs dangerous tools in
+> isolation with snapshot/rollback, **deterministic replay** of a recorded run,
+> and a **local→remote cost cascade**. All are verified offline (unit tests + the
+> `sandbox-demo` / `replay` commands); the real OS-isolation backend
+> (`ProxmoxSandbox`) ships for you to run on your own Proxmox node. This README
+> states what is verified offline vs. what needs your homelab.
 
 ---
 
@@ -33,16 +35,26 @@ than buried:
 - **Two adapters cover most of the market.** `AnthropicAdapter` for Claude, and
   one `OpenAICompatAdapter` for every OpenAI-compatible endpoint (incl. local).
 - **The differentiator is the *combination*, not orchestration alone.**
-  Orchestrators are a crowded space; the intended moat is **OS isolation × cost
-  ledger × deterministic replay** together. In v0 only the ledger + tracing
-  exist; the isolation and replay are v1 (and clearly marked as such).
-- **"Deterministic replay" (v1) = reproducing recorded I/O**, not re-running the
-  LLM bit-for-bit. LLM outputs are not deterministic; the *trace* is.
-- **Dangerous tools are gated from day one, executed in isolation in v1.** The
-  registry refuses to run a tool marked `dangerous` unless a sandbox executor is
-  wired in. In v0 there is no sandbox, so such tools are *declared but blocked*.
-  v1 routes them into a real Proxmox LXC. The gate is real now; the isolation is
-  demonstrated in v1 (not merely claimed).
+  Orchestrators are a crowded space; the moat is **OS isolation × cost ledger ×
+  deterministic replay** together. As of v1 all three exist (the OS-isolation
+  backend is verified by you on a real node — see below).
+- **"Deterministic replay" = reproducing recorded I/O**, not re-running the LLM
+  bit-for-bit. LLM outputs are not deterministic; the *trace* is. `conductor
+  replay <trace>` re-drives the loop from a trace and reproduces its tool I/O and
+  final answer (no provider calls, no tool side effects).
+- **Dangerous tools are gated, and now executed in a sandbox with rollback.** The
+  registry refuses a `dangerous` tool unless a sandbox is wired in. Two sandbox
+  backends, at different honesty tiers:
+  - `ProxmoxSandbox` — **real OS-level isolation** in a Proxmox LXC (snapshot /
+    `pct exec` / rollback, mirroring the author's
+    [proxmoxbot](https://github.com/akagifreeez/proxmoxbot)). This is the real
+    differentiator; it needs a live Proxmox node and is **not** run by the
+    offline test suite — you verify it on your homelab.
+  - `SubprocessSandbox` — an **offline** double (temp-dir + copy-tree snapshot /
+    rollback). It really executes and really reverts, so it proves the
+    gate/snapshot/rollback *contract* without a node — but it is **NOT a security
+    boundary** (a command can still touch absolute paths). It is for tests and
+    the demo, not for containing hostile code.
 - **AI = existing provider APIs only.** No model is trained or fine-tuned here.
   No claim that "the AI learns/predicts." Pricing figures for Claude are
   Anthropic's published per-token rates; OpenAI-family figures are approximate.
@@ -93,6 +105,63 @@ scripted backend) and prints:
 That is the v0 acceptance criterion: *one task, two providers, all I/O traced,
 cost split per provider.*
 
+## What's new in v1
+
+### Sandboxed dangerous tools, with rollback
+
+```bash
+conductor sandbox-demo
+```
+
+Runs an agent that lists files, executes a **destructive command**, then **rolls
+back** from a pre-command snapshot — printing the box contents at each step:
+
+```
+files                     before: ['important.txt']
+files  after destructive command: []          ← contained inside the sandbox
+files             after rollback: ['important.txt']   ← restored
+```
+
+The command runs against the sandbox box, never the host cwd, and is fully
+revertible. Offline this uses `SubprocessSandbox` (filesystem snapshot, *not* a
+security boundary). For real OS isolation, point it at your Proxmox node:
+
+```python
+from conductor import Orchestrator, ToolRegistry, SANDBOX_TOOLS
+from conductor.sandbox import ProxmoxSandbox
+
+reg = ToolRegistry()
+for t in SANDBOX_TOOLS:
+    reg.register(t)
+# env: PROXMOX_HOST / PROXMOX_USER / PROXMOX_TOKEN_NAME / PROXMOX_TOKEN_VALUE
+#      PROXMOX_NODE / PROXMOX_SSH_HOST
+sandbox = ProxmoxSandbox(vmid=210, node="pve")        # an LXC to run commands in
+Orchestrator(backend, reg, run_id="job", sandbox=sandbox).run("...")
+```
+
+`pip install 'conductor-cp[proxmox]'` (proxmoxer + paramiko) for that backend.
+
+### Deterministic replay
+
+```bash
+conductor replay --trace traces/run-<id>.jsonl
+```
+
+Re-drives the loop from a recorded trace, returning the **recorded** tool outputs
+(not re-executing) and the **recorded** assistant turns (no provider call), then
+reports whether the tool I/O and final answer were reproduced. Proves a trace is
+complete enough to reconstruct a run — including replaying a *sandbox* run with
+no sandbox at all.
+
+### Local→remote cost cascade
+
+`CascadeBackend(cheap, strong)` is itself a backend: each step it tries the cheap
+model (e.g. local Ollama) first and only escalates to the strong model (e.g.
+Claude) when a confidence gate fails — recording **both** attempts in the ledger
+so the per-provider split shows exactly what went local vs. remote. The default
+gate is a small heuristic (made progress / non-hedging answer?), not a learned
+router; pass your own.
+
 ## Install
 
 > **Honest status:** Conductor is **not on PyPI**, and `pip install
@@ -139,20 +208,22 @@ conductor run --provider local --model qwen2.5:3b-instruct --task "..."
 
 ## Roadmap
 
-- **v0 (now):** provider-agnostic tool-use loop · Anthropic + OpenAI-compat +
+- **v0 (done):** provider-agnostic tool-use loop · Anthropic + OpenAI-compat +
   local + scripted backends · JSONL tracing · per-provider cost ledger · sandbox
-  gate (declared, not yet executing).
-- **v1:** Proxmox sandbox executor (create → start → exec → snapshot → rollback)
-  so dangerous tools run in a real LXC and roll back the host unharmed ·
-  local↔remote cost cascade via token-router's router · deterministic replay of
-  a recorded trace · 1-minute demo.
+  gate (declared).
+- **v1 (this release):** sandbox executor (`ProxmoxSandbox` real OS isolation +
+  `SubprocessSandbox` offline double) so dangerous tools run isolated and roll
+  back · local→remote cost cascade · deterministic replay of a recorded trace ·
+  `sandbox-demo` / `replay` commands. *Pending your homelab:* a live end-to-end
+  run on a real Proxmox node (the offline double proves the contract).
 - **v2 (one of):** multi-agent coordination with a shared budget · microVM
   (KVM/Firecracker) comparison · a lightweight web dashboard.
 
 ## Tech
 
 Python · `requests` for the OpenAI-compatible path · official `anthropic` SDK
-(optional extra) for Claude · [token-router](https://github.com/akagifreeez/token-router)
+(optional extra) for Claude · `proxmoxer` + `paramiko` (optional `[proxmox]`
+extra) for the real LXC sandbox · [token-router](https://github.com/akagifreeez/token-router)
 for the `Usage`/`Ledger` accounting · no agent framework.
 
 ---

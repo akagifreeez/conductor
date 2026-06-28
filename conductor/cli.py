@@ -1,6 +1,6 @@
 """Command-line entry point.
 
-Two subcommands:
+Subcommands:
 
 * ``conductor run`` - run one task through one provider. ``--provider`` selects
   the backend; the SAME loop, tools, tracer, and ledger run regardless of which
@@ -9,8 +9,15 @@ Two subcommands:
 * ``conductor demo`` - the offline v0 goal, no network or API key required: the
   same task is run through two *different* provider labels (using the scripted
   backend) and the result shows (a) a trace file per run with all I/O and (b) a
-  cost ledger split per provider. This is the reproducible proof that the loop is
-  provider-agnostic and the accounting is per-provider.
+  cost ledger split per provider.
+
+* ``conductor sandbox-demo`` - the offline v1 sandbox proof: a destructive
+  command runs inside a sandbox, is contained, and is rolled back from a
+  snapshot - with the host untouched. Uses the SubprocessSandbox double (no
+  Proxmox needed); the real OS isolation is ProxmoxSandbox.
+
+* ``conductor replay`` - re-run a recorded trace deterministically, reproducing
+  its tool I/O and final answer (no provider calls, no tool side effects).
 """
 from __future__ import annotations
 
@@ -27,7 +34,9 @@ from .backends.base import AgentBackend
 from .backends.scripted import ScriptedBackend, ScriptedTurn
 from .orchestrator import Orchestrator, conductor_summary
 from .pricing import make_pricing
-from .tools import READONLY_TOOLS, ToolRegistry
+from .replay import load_trace, replay_trace
+from .sandbox import SubprocessSandbox
+from .tools import READONLY_TOOLS, SANDBOX_TOOLS, ToolRegistry
 
 
 def _run_id(tag: str) -> str:
@@ -155,6 +164,80 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sandbox_demo(args: argparse.Namespace) -> int:
+    """Offline v1 proof: destructive command -> contained -> rolled back."""
+    py = sys.executable
+    # Portable file ops via the running interpreter (works on Windows + Linux).
+    # chr(42)='*', chr(47)='/' to avoid nested-quote headaches in the -c string.
+    _listing = "sorted(p.replace(os.sep,chr(47)) for p in glob.glob(chr(42)) if os.path.isfile(p))"
+    list_cmd = f'"{py}" -c "import glob,os;print({_listing})"'
+    # Destroy everything, THEN print the (now empty) listing - so the command's own
+    # output proves the destruction was contained inside the box.
+    destroy_cmd = (
+        f'"{py}" -c "import glob,os,shutil;'
+        f"[shutil.rmtree(p) if os.path.isdir(p) else os.remove(p) for p in glob.glob(chr(42))];"
+        f'print({_listing})"'
+    )
+    reg = ToolRegistry()
+    for tool in SANDBOX_TOOLS:
+        reg.register(tool)
+    # No hardcoded snapshot token: sandbox_rollback with no arg reverts the most
+    # recent run_shell (here, the destructive one).
+    script = [
+        ScriptedTurn(text="listing the sandbox", tool_calls=[("run_shell", {"command": list_cmd})]),
+        ScriptedTurn(text="running a destructive command (delete-all)", tool_calls=[("run_shell", {"command": destroy_cmd})]),
+        ScriptedTurn(text="rolling back the destructive command", tool_calls=[("sandbox_rollback", {})]),
+        ScriptedTurn(text="listing after rollback", tool_calls=[("run_shell", {"command": list_cmd})]),
+        ScriptedTurn(text="The destructive command ran inside the sandbox, was contained, and was rolled back."),
+    ]
+    backend = ScriptedBackend(script, name="scripted-agent", backend="scripted")
+    sandbox = SubprocessSandbox(seed_files={"important.txt": "keep me", "logs/app.log": "data"})
+    print("Sandbox demo: a destructive command, contained and rolled back (offline)\n")
+    res = Orchestrator(
+        backend, reg, run_id=_run_id("sandbox"), trace_dir=args.trace_dir,
+        max_steps=10, sandbox=sandbox,
+    ).run("List the files, destroy them, then roll back.")
+
+    rows = load_trace(res.trace_path)
+    listings = []
+    for r in rows:
+        if r["kind"] == "tool_result" and r["content"].startswith("{") and "stdout" in r["content"]:
+            import json as _json
+            out = _json.loads(r["content"]).get("stdout", "")
+            if out.strip().startswith("["):
+                listings.append(out.strip())
+    labels = ["before", "after destructive command", "after rollback"]
+    for label, out in zip(labels, listings):
+        print(f"  files {label:>26}: {out}")
+    print(f"\nstatus={res.status}  trace: {res.trace_path}")
+    print(format_ledger(res.ledger_summary))
+    print(
+        "\nThe destructive command executed in the sandbox box dir, never the host "
+        "cwd, and rollback restored the files. (Offline double = filesystem "
+        "snapshot, NOT a security boundary; real OS isolation is ProxmoxSandbox.)"
+    )
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Re-run a recorded trace deterministically and report the match."""
+    res, cmp = replay_trace(args.trace, run_id=_run_id("replay"), trace_dir=args.trace_dir)
+    print(f"replayed {args.trace}")
+    print(f"  -> new trace: {res.trace_path}")
+    n_orig, n_rep = cmp["n_tool_results"], cmp["n_tool_results_replayed"]
+    if n_orig == 0:
+        print("  tool I/O reproduced: n/a (no tool calls in trace)")
+    else:
+        counts = f"{n_rep}/{n_orig}" if n_rep != n_orig else f"{n_orig}"
+        print(f"  tool I/O reproduced: {cmp['tool_results_match']}  ({counts} tool result(s))")
+    print(f"  final answer reproduced: {cmp['final_match']}")
+    print(f"  overall match: {cmp['match']}")
+    if not cmp["match"]:
+        print(f"  original final: {cmp['original_final']!r}")
+        print(f"  replayed final: {cmp['replayed_final']!r}")
+    return 0 if cmp["match"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="conductor", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -178,6 +261,18 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--max-steps", type=int, default=8)
     pd.add_argument("--trace-dir", default="traces")
     pd.set_defaults(func=cmd_demo)
+
+    ps = sub.add_parser(
+        "sandbox-demo",
+        help="offline v1 sandbox proof (destructive cmd contained + rolled back)",
+    )
+    ps.add_argument("--trace-dir", default="traces")
+    ps.set_defaults(func=cmd_sandbox_demo)
+
+    prp = sub.add_parser("replay", help="deterministically replay a recorded trace")
+    prp.add_argument("--trace", required=True, help="path to a run-*.jsonl trace")
+    prp.add_argument("--trace-dir", default="traces", help="where to write the replay trace")
+    prp.set_defaults(func=cmd_replay)
 
     return p
 

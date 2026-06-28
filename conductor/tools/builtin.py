@@ -98,5 +98,32 @@ RUN_SHELL = Tool(
     dangerous=True,
 )
 
+# Dangerous: roll the sandbox back to a snapshot token (handled by SandboxExecutor).
+SANDBOX_ROLLBACK = Tool(
+    spec=ToolSpec(
+        name="sandbox_rollback",
+        description=(
+            "Roll the sandbox back to a snapshot. Pass the token returned by a "
+            "previous run_shell call, or omit it to revert the most recent "
+            "run_shell. DANGEROUS: only valid inside a sandbox."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "snapshot": {
+                    "type": "string",
+                    "description": "Snapshot token to restore (optional; defaults to the last run_shell).",
+                }
+            },
+            "additionalProperties": False,
+        },
+    ),
+    handler=_run_shell,  # inert in-process; real handling is in SandboxExecutor
+    dangerous=True,
+)
+
 # The default read-only toolset for v0 demos and tests.
 READONLY_TOOLS = [NOW, ECHO, ADD]
+
+# The sandboxed-shell toolset for v1 (requires a Sandbox wired into the registry).
+SANDBOX_TOOLS = [RUN_SHELL, SANDBOX_ROLLBACK]

@@ -108,12 +108,18 @@ class AssistantTurn:
     ``stop_reason`` is normalized to ``"tool_use"`` (the model wants tools run)
     or ``"end"`` (the model is done). ``usage`` is always populated so the cost
     ledger can never silently drift - same guarantee as token-router's ``Model``.
+
+    ``extra_usages`` carries the cost of any *discarded* internal calls a
+    meta-backend made on the way to this turn (e.g. a cost cascade that tried a
+    cheap model first, then escalated). The loop records these in the ledger too,
+    so an escalation's full cost is never hidden.
     """
 
     text: str
     tool_calls: List[ToolCall]
     stop_reason: str
     usage: Usage
+    extra_usages: List[Usage] = field(default_factory=list)
 
     def as_message(self) -> Message:
         """Re-enter this turn into the conversation history as an assistant message."""

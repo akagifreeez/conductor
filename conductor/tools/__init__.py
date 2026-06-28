@@ -1,6 +1,14 @@
 """Define-once tools and the registry that runs them (with the sandbox gate)."""
 from .registry import SandboxRequiredError, Tool, ToolHandler, ToolRegistry
-from .builtin import ADD, ECHO, NOW, READONLY_TOOLS, RUN_SHELL
+from .builtin import (
+    ADD,
+    ECHO,
+    NOW,
+    READONLY_TOOLS,
+    RUN_SHELL,
+    SANDBOX_ROLLBACK,
+    SANDBOX_TOOLS,
+)
 
 __all__ = [
     "SandboxRequiredError",
@@ -11,5 +19,7 @@ __all__ = [
     "ECHO",
     "NOW",
     "RUN_SHELL",
+    "SANDBOX_ROLLBACK",
     "READONLY_TOOLS",
+    "SANDBOX_TOOLS",
 ]

@@ -61,6 +61,10 @@ class ToolRegistry:
         self._tools: Dict[str, Tool] = {}
         self._sandbox = sandbox
 
+    def set_sandbox(self, sandbox: Optional[Callable[[Tool, Dict[str, Any]], Any]]) -> None:
+        """Wire (or clear) the sandbox executor dangerous tools dispatch through."""
+        self._sandbox = sandbox
+
     def register(self, tool: Tool) -> None:
         if tool.spec.name in self._tools:
             raise ValueError(f"tool already registered: {tool.spec.name}")

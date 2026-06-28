@@ -90,6 +90,7 @@ class Tracer:
                 "stop_reason": turn.stop_reason,
                 "tool_calls": [asdict(tc) for tc in turn.tool_calls],
                 "usage": asdict(turn.usage),
+                "extra_usages": [asdict(u) for u in turn.extra_usages],
             },
         )
 
@@ -98,6 +99,17 @@ class Tracer:
 
     def tool_result(self, *, step: int, result: ToolResult) -> None:
         self._emit("tool_result", {"step": step, **asdict(result)})
+
+    def sandbox(self, *, event: str, kind: str, name: str, detail: str = "") -> None:
+        """A sandbox lifecycle event (setup / teardown / error).
+
+        Note ``sandbox_kind`` (not ``kind``) so it can't collide with the event's
+        own top-level ``kind`` field in ``_emit``.
+        """
+        self._emit(
+            "sandbox",
+            {"event": event, "sandbox_kind": kind, "name": name, "detail": detail},
+        )
 
     def run_end(self, *, status: str, steps: int, final_text: str) -> None:
         self._emit("run_end", {"status": status, "steps": steps, "final_text": final_text})

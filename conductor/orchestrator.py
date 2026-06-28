@@ -31,6 +31,7 @@ from token_router.accounting import Ledger
 
 from .backends.base import AgentBackend, Message
 from .pricing import make_pricing
+from .sandbox.base import Sandbox, SandboxExecutor
 from .tools.registry import ToolRegistry
 from .tracer import Tracer
 
@@ -88,6 +89,7 @@ class Orchestrator:
         trace_dir: str = "traces",
         ledger: Optional[Ledger] = None,
         max_tokens: int = 1024,
+        sandbox: Optional["Sandbox"] = None,
     ) -> None:
         self.backend = backend
         self.registry = registry
@@ -96,6 +98,10 @@ class Orchestrator:
         self.max_steps = max(1, int(max_steps))
         self.trace_dir = trace_dir
         self.max_tokens = max_tokens
+        # When a sandbox is given, the orchestrator owns its lifecycle (setup at
+        # run start, teardown in finally) and wires the registry's dangerous-tool
+        # gate to dispatch through it. Without one, dangerous tools stay blocked.
+        self.sandbox = sandbox
         # A fresh ledger per run unless the caller shares one across runs (e.g.
         # to aggregate the per-provider cost split of a two-provider demo). An
         # owned ledger is streamed to its own JSONL (crash-durable, mirroring the
@@ -108,6 +114,18 @@ class Orchestrator:
             ledger_path = os.path.join(trace_dir, f"ledger-{run_id}.jsonl")
             self.ledger = Ledger(pricing=make_pricing(), jsonl_path=ledger_path)
 
+    def _trace_sandbox(self, tracer: Tracer, event: str, detail: str = "") -> None:
+        """Emit a sandbox lifecycle event, never letting a trace-write failure
+        during cleanup abort teardown/close."""
+        if self.sandbox is None:
+            return
+        try:
+            tracer.sandbox(
+                event=event, kind=self.sandbox.kind, name=self.sandbox.name, detail=detail
+            )
+        except Exception:  # noqa: BLE001 - a cleanup trace write must not propagate
+            pass
+
     def run(self, task: str) -> RunResult:
         tools = self.registry.specs()
         messages: List[Message] = [Message(role="user", text=task)]
@@ -119,6 +137,9 @@ class Orchestrator:
         steps = 0
 
         tracer = Tracer(self.run_id, trace_dir=self.trace_dir)
+        prev_sandbox = None
+        sandbox_wired = False
+        pending_exc: Optional[BaseException] = None
         try:
             tracer.run_start(
                 provider=self.backend.backend,
@@ -128,6 +149,15 @@ class Orchestrator:
                 tools=tools,
             )
             try:
+                if self.sandbox is not None:
+                    # Wire the dangerous-tool gate to this sandbox and bring it up.
+                    # Save the registry's prior sandbox so we restore (not clobber)
+                    # it afterwards - the registry may be reused by the caller.
+                    prev_sandbox = getattr(self.registry, "_sandbox", None)
+                    self.registry.set_sandbox(SandboxExecutor(self.sandbox))
+                    sandbox_wired = True
+                    self.sandbox.setup()
+                    self._trace_sandbox(tracer, "setup")
                 for step in range(self.max_steps):
                     steps = step + 1
                     tracer.llm_request(
@@ -146,6 +176,10 @@ class Orchestrator:
                     tracer.llm_response(step=steps, turn=turn)
                     # Every LLM call hits the ledger, keyed by provider via Usage.backend.
                     self.ledger.record(self.run_id, stage="llm", usage=turn.usage)
+                    # A meta-backend (e.g. cost cascade) may have made discarded
+                    # attempts; record their cost too so escalation isn't hidden.
+                    for extra in turn.extra_usages:
+                        self.ledger.record(self.run_id, stage="llm_cascade_attempt", usage=extra)
 
                     # Keep the best-available answer each turn: a turn may carry
                     # text alongside tool calls, and if we hit max_steps on a
@@ -171,20 +205,37 @@ class Orchestrator:
                         tracer.tool_result(step=steps, result=result)
                         results.append(result)
                     messages.append(Message(role="user", tool_results=results))
+            except Exception as exc:  # noqa: BLE001 - capture; run_end is emitted below
+                status = "error"
+                final_text = f"{type(exc).__name__}: {exc}"
+                pending_exc = exc
+            finally:
+                # Tear the sandbox down BEFORE run_end so run_end stays the terminal
+                # trace event (a pinned invariant). Teardown failures never mask the
+                # run, and the registry's prior sandbox is restored, not forced None.
+                if self.sandbox is not None:
+                    try:
+                        self.sandbox.teardown()
+                        self._trace_sandbox(tracer, "teardown")
+                    except Exception as e:  # noqa: BLE001
+                        self._trace_sandbox(
+                            tracer, "teardown_error", detail=f"{type(e).__name__}: {e}"
+                        )
+                    if sandbox_wired:
+                        self.registry.set_sandbox(prev_sandbox)
 
-                tracer.run_end(status=status, steps=steps, final_text=final_text)
-            except Exception as exc:  # noqa: BLE001 - ensure a terminal trace event
-                # A backend failure mid-run must still leave a terminated trace,
-                # so replay/inspection tooling sees a run_end (status="error")
-                # rather than a silently truncated file. Then re-raise.
-                tracer.run_end(
-                    status="error", steps=steps, final_text=f"{type(exc).__name__}: {exc}"
-                )
-                raise
+            # Always the last event written - on success, max_steps, AND error.
+            tracer.run_end(status=status, steps=steps, final_text=final_text)
+            if pending_exc is not None:
+                raise pending_exc
         finally:
-            tracer.close()
-            if self._owns_ledger:
-                self.ledger.close()
+            # Close tracer and ledger independently so a failure in one can't leak
+            # the other (the v0 "ledger always closed" guarantee).
+            try:
+                tracer.close()
+            finally:
+                if self._owns_ledger:
+                    self.ledger.close()
 
         return RunResult(
             final_text=final_text,

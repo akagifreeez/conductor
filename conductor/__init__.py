@@ -22,11 +22,20 @@ from .backends.base import (
     Usage,
 )
 from .backends.scripted import ScriptedBackend, ScriptedTurn
-from .orchestrator import DEFAULT_SYSTEM, Orchestrator, RunResult
-from .tools import READONLY_TOOLS, SandboxRequiredError, Tool, ToolRegistry
+from .backends.cascade import CascadeBackend, default_gate
+from .orchestrator import DEFAULT_SYSTEM, Orchestrator, RunResult, conductor_summary
+from .replay import replay_trace
+from .sandbox import ExecResult, ProxmoxSandbox, Sandbox, SandboxExecutor, SubprocessSandbox
+from .tools import (
+    READONLY_TOOLS,
+    SANDBOX_TOOLS,
+    SandboxRequiredError,
+    Tool,
+    ToolRegistry,
+)
 from .tracer import Tracer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AgentBackend",
@@ -38,13 +47,23 @@ __all__ = [
     "Usage",
     "ScriptedBackend",
     "ScriptedTurn",
+    "CascadeBackend",
+    "default_gate",
     "Orchestrator",
     "RunResult",
+    "conductor_summary",
     "DEFAULT_SYSTEM",
+    "replay_trace",
+    "Sandbox",
+    "SandboxExecutor",
+    "SubprocessSandbox",
+    "ProxmoxSandbox",
+    "ExecResult",
     "Tool",
     "ToolRegistry",
     "SandboxRequiredError",
     "READONLY_TOOLS",
+    "SANDBOX_TOOLS",
     "Tracer",
     "__version__",
 ]
