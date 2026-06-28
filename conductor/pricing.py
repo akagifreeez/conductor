@@ -5,7 +5,7 @@ Reuses token-router's ``Pricing`` (USD per 1,000,000 tokens; ``backend=="local"`
 Studio, labeled backend ``"local"``) is free by construction; remote providers
 are priced by model id.
 
-Honesty note (盛らない): the Claude figures are from Anthropic's published
+Honesty note: the Claude figures are from Anthropic's published
 per-token pricing; the OpenAI-family figures are approximate and should be
 confirmed against the provider's current pricing page before quoting real costs
 - ``Pricing.override(...)`` makes that a one-liner.

@@ -15,7 +15,7 @@ neutral interface, with **JSONL tracing** and a **per-provider cost ledger**.
 
 ---
 
-## Honest notes first (盛らない)
+## Honest notes first
 
 This project is deliberately scoped, and these limits are stated up front rather
 than buried:
@@ -95,7 +95,7 @@ cost split per provider.*
 
 ## Install
 
-> **Honest status (盛らない):** Conductor is **not on PyPI**, and `pip install
+> **Honest status:** Conductor is **not on PyPI**, and `pip install
 > conductor-cp` does **not** work yet — it depends on
 > [token-router](https://github.com/akagifreeez/token-router), which is also not
 > yet published, so there is currently no clean-machine pip path. Install both
