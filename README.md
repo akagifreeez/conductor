@@ -1,6 +1,15 @@
 # 🎛️ Conductor
 
+[![CI](https://github.com/akagifreeez/conductor/actions/workflows/ci.yml/badge.svg)](https://github.com/akagifreeez/conductor/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **A vendor-neutral, self-hosted control plane for LLM agents.**
+
+> 👀 **See it without running anything:** [`examples/`](examples/) holds real
+> committed outputs — a [run trace](examples/example-trace.jsonl), a
+> [per-provider cost ledger](examples/example-ledger.jsonl), and a
+> [sandbox snapshot/rollback trace](examples/example-sandbox-trace.jsonl).
 
 One self-built tool-use loop drives *any* provider — Claude (official Anthropic
 SDK), any OpenAI-compatible API (OpenAI / OpenRouter / Groq / Mistral / Together
@@ -317,6 +326,26 @@ conductor run --provider local --model qwen2.5:3b-instruct --task "..."
   9.1 node — PASS** (the last remaining "needs a homelab" item, now done).
 - **Later (one of):** microVM (KVM/Firecracker) comparison · a lightweight web
   dashboard over traces/ledger.
+
+## Known limitations (tracked, not hidden)
+
+A whole-codebase review surfaced these; the correctness ones are fixed, the rest
+are acknowledged rather than papered over:
+
+- **Replay does not re-apply a budget.** A run that ended `budget_exceeded`
+  replays without the ceiling, so its status differs — the comparison now
+  *reports this as a non-match* (`status_match: false`) instead of hiding it.
+- **The real-backend adapters' failure branches are lightly covered** by tests.
+  The offline doubles exercise the happy path + injection/leak guards; live error
+  paths (provider 5xx, a container that won't start) lean on the resilience layer
+  rather than dedicated tests.
+- **`ProxmoxSandbox` (API) auto-adds unknown SSH host keys** (`AutoAddPolicy`) for
+  the `pct exec` channel — fine on a trusted LAN/Tailscale, not for hostile nets.
+- **`DockerSandbox` containers are not resource/network-constrained by default**
+  (no `--network none`/`--memory`/`--cap-drop`). Add them for untrusted workloads.
+- **Container isolation tier:** Docker and Proxmox LXC share the host kernel
+  (contained + revertible, but not a VM-grade boundary). A microVM backend is the
+  future option for that.
 
 ## Tech
 

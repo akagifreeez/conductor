@@ -91,34 +91,43 @@ class Coordinator:
         self.budget_usd = budget_usd
         self.trace_dir = trace_dir
         self.run_id_prefix = run_id_prefix
-        # Unique per-coordinator token so repeated run_all() calls (or two
-        # coordinators sharing a prefix) never collide on trace/ledger filenames
-        # (a Tracer opens its file truncating - the CLI guards this the same way).
-        self._uniq = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-        self._owns_ledger = ledger is None
-        if ledger is not None:
-            self.ledger = ledger
-        else:
-            # Mirror the Orchestrator's owned-ledger crash-durability: stream to JSONL.
-            path = os.path.join(trace_dir, f"ledger-{run_id_prefix}-{self._uniq}.jsonl")
-            self.ledger = Ledger(pricing=make_pricing(), jsonl_path=path)
+        # A caller-owned (shared) ledger persists across batches; an owned ledger
+        # is created FRESH per run_all() (see below), never once in __init__ - so
+        # repeated run_all() calls don't collide on filenames or double-count cost.
+        self._injected_ledger = ledger
+        self._batch = 0
+        # Exposed after run_all so callers can inspect the most recent batch ledger.
+        self.ledger = ledger if ledger is not None else Ledger(pricing=make_pricing())
 
     def run_all(self, jobs: List[Job]) -> CoordinatorResult:
         result = CoordinatorResult(budget_usd=self.budget_usd)
+        self._batch += 1
+        # Fresh per-CALL token so repeated run_all() invocations never collide on
+        # trace/ledger filenames (Tracer truncates) - a per-Coordinator token did.
+        batch = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}-b{self._batch}"
+        owns_ledger = self._injected_ledger is None
+        if owns_ledger:
+            # Fresh owned ledger per batch: crash-durable JSONL, and no stale rows
+            # from a prior batch leaking into this batch's budget/summary.
+            path = os.path.join(self.trace_dir, f"ledger-{self.run_id_prefix}-{batch}.jsonl")
+            ledger = Ledger(pricing=make_pricing(), jsonl_path=path)
+        else:
+            ledger = self._injected_ledger
+        self.ledger = ledger
         try:
             for i, job in enumerate(jobs):
                 # Skip before starting if the global budget is already spent.
-                if self.budget_usd is not None and ledger_cost_usd(self.ledger) >= self.budget_usd:
+                if self.budget_usd is not None and ledger_cost_usd(ledger) >= self.budget_usd:
                     result.outcomes.append(JobOutcome(label=job.label, status="skipped_budget"))
                     continue
                 orch = Orchestrator(
                     job.backend,
                     job.registry,
-                    run_id=f"{self.run_id_prefix}-{self._uniq}-{i}-{job.label}",
+                    run_id=f"{self.run_id_prefix}-{batch}-{i}-{job.label}",
                     system=job.system or DEFAULT_SYSTEM,
                     max_steps=job.max_steps,
                     trace_dir=self.trace_dir,
-                    ledger=self.ledger,          # shared -> global budget
+                    ledger=ledger,               # shared -> global budget for this batch
                     budget_usd=self.budget_usd,  # each step also checks the global spend
                 )
                 # Isolate per-job failures: one erroring agent must not abort the
@@ -133,9 +142,9 @@ class Coordinator:
                                    error=f"{type(exc).__name__}: {exc}")
                     )
         finally:
-            if self._owns_ledger:
-                self.ledger.close()
+            if owns_ledger:
+                ledger.close()
         # 6 dp to match ledger_summary["est_cost_usd"] (avoid two disagreeing totals).
-        result.total_cost_usd = round(ledger_cost_usd(self.ledger), 6)
-        result.ledger_summary = conductor_summary(self.ledger)
+        result.total_cost_usd = round(ledger_cost_usd(ledger), 6)
+        result.ledger_summary = conductor_summary(ledger)
         return result

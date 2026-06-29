@@ -27,6 +27,7 @@ your own ``gate`` to change the policy.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable, List, Optional
 
 from .base import AgentBackend, AssistantTurn, Message, ToolSpec
@@ -100,5 +101,9 @@ class CascadeBackend(AgentBackend):
             system=system, messages=messages, tools=tools,
             max_tokens=max_tokens, temperature=temperature,
         )
-        strong_turn.extra_usages = list(strong_turn.extra_usages) + [cheap_turn.usage]
-        return strong_turn
+        # Return a NEW turn rather than mutating the strong backend's object: a
+        # backend that reuses/returns a shared AssistantTurn would otherwise
+        # accumulate extra_usages across steps and double-count the cheap leg.
+        return replace(
+            strong_turn, extra_usages=list(strong_turn.extra_usages) + [cheap_turn.usage]
+        )

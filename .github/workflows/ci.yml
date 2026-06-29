@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # token-router is the in-process accounting dependency (public repo).
+      - name: Install token-router
+        run: pip install "git+https://github.com/akagifreeez/token-router"
+      - name: Install conductor (no deps; token-router already installed)
+        run: pip install -e . --no-deps
+      - name: Install pytest
+        run: pip install pytest
+      - name: Run tests
+        run: pytest -q

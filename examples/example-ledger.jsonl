@@ -1,0 +1,4 @@
+{"task_id": "1782697895239-anthropic-69bf76", "stage": "llm", "backend": "anthropic", "model": "claude-opus-4-8", "prompt_tokens": 50, "completion_tokens": 0, "total_tokens": 50, "cost_usd": 0.00025, "latency_ms": 0.0, "estimated": true}
+{"task_id": "1782697895239-anthropic-69bf76", "stage": "llm", "backend": "anthropic", "model": "claude-opus-4-8", "prompt_tokens": 57, "completion_tokens": 17, "total_tokens": 74, "cost_usd": 0.00071, "latency_ms": 0.0, "estimated": true}
+{"task_id": "1782697895239-local-201d09", "stage": "llm", "backend": "local", "model": "qwen2.5:3b-instruct", "prompt_tokens": 50, "completion_tokens": 0, "total_tokens": 50, "cost_usd": 0.0, "latency_ms": 0.0, "estimated": true}
+{"task_id": "1782697895239-local-201d09", "stage": "llm", "backend": "local", "model": "qwen2.5:3b-instruct", "prompt_tokens": 57, "completion_tokens": 17, "total_tokens": 74, "cost_usd": 0.0, "latency_ms": 0.0, "estimated": true}

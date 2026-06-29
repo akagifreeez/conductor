@@ -10,9 +10,13 @@ re-drives the exact same loop, but:
   events) instead of re-executing tools.
 
 So a replay produces a fresh trace that should match the original's tool I/O,
-final answer, and per-provider cost. This proves the trace is **complete and
+final answer, and terminal status. This proves the trace is **complete and
 sufficient** to reconstruct the run deterministically - the foundation for audit
 and (later) what-if replay. No provider key, no tool side effects, no sandbox.
+
+(The replay records the same per-call ``Usage`` it read from the trace, so the
+replayed ledger reproduces the original cost too; the comparison below checks
+tool I/O, final answer, and status - it does not separately diff cost.)
 """
 from __future__ import annotations
 
@@ -145,16 +149,24 @@ def replay_trace(path: str, *, run_id: str, trace_dir: str = "traces") -> Tuple[
     res = orch.run(task)
 
     original_results = [e.get("content", "") for e in events if e.get("kind") == "tool_result"]
-    original_final = next((e.get("final_text", "") for e in events if e.get("kind") == "run_end"), "")
+    original_run_end = next((e for e in events if e.get("kind") == "run_end"), {})
+    original_final = original_run_end.get("final_text", "")
+    original_status = original_run_end.get("status", "")
     new_events = load_trace(res.trace_path)
     new_results = [e.get("content", "") for e in new_events if e.get("kind") == "tool_result"]
 
     tool_results_match = new_results == original_results
     final_match = res.final_text == original_final
+    # Compare terminal status too: a run that ORIGINALLY ended e.g. "budget_exceeded"
+    # must not silently replay as "max_steps" and still be reported as a match.
+    status_match = res.status == original_status
     comparison = {
-        "match": tool_results_match and final_match,
+        "match": tool_results_match and final_match and status_match,
         "tool_results_match": tool_results_match,
         "final_match": final_match,
+        "status_match": status_match,
+        "original_status": original_status,
+        "replayed_status": res.status,
         "original_final": original_final,
         "replayed_final": res.final_text,
         "n_tool_results": len(original_results),

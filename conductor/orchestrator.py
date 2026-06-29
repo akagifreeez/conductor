@@ -116,17 +116,15 @@ class Orchestrator:
         # run start, teardown in finally) and wires the registry's dangerous-tool
         # gate to dispatch through it. Without one, dangerous tools stay blocked.
         self.sandbox = sandbox
-        # A fresh ledger per run unless the caller shares one across runs (e.g.
-        # to aggregate the per-provider cost split of a two-provider demo). An
-        # owned ledger is streamed to its own JSONL (crash-durable, mirroring the
-        # trace) and closed by us; a shared/injected ledger is the caller's to
-        # configure and close.
-        self._owns_ledger = ledger is None
-        if ledger is not None:
-            self.ledger = ledger
-        else:
-            ledger_path = os.path.join(trace_dir, f"ledger-{run_id}.jsonl")
-            self.ledger = Ledger(pricing=make_pricing(), jsonl_path=ledger_path)
+        # Ledger policy: a shared/injected ledger is the caller's to configure and
+        # close; an OWNED ledger is created FRESH inside run() (not here) - exactly
+        # like the per-run Tracer - so that re-running the same Orchestrator doesn't
+        # write to a closed ledger (silently dropping disk rows while in-memory
+        # rows from the prior run leak into the next run's budget/summary).
+        self._injected_ledger = ledger
+        # self.ledger is (re)assigned at the start of each run(); seed it so the
+        # attribute exists even before the first run.
+        self.ledger = ledger if ledger is not None else Ledger(pricing=make_pricing())
 
     def _trace_sandbox(self, tracer: Tracer, event: str, detail: str = "") -> None:
         """Emit a sandbox lifecycle event, never letting a trace-write failure
@@ -141,6 +139,19 @@ class Orchestrator:
             pass
 
     def run(self, task: str) -> RunResult:
+        # Set up the ledger FRESH per run when we own it (single-use, like the
+        # Tracer): this makes re-running the same Orchestrator safe and keeps the
+        # on-disk JSONL and the in-memory rows in agreement.
+        if self._injected_ledger is not None:
+            self.ledger = self._injected_ledger
+            owns_ledger = False
+        else:
+            self.ledger = Ledger(
+                pricing=make_pricing(),
+                jsonl_path=os.path.join(self.trace_dir, f"ledger-{self.run_id}.jsonl"),
+            )
+            owns_ledger = True
+
         tools = self.registry.specs()
         messages: List[Message] = [Message(role="user", text=task)]
         final_text = ""
@@ -252,7 +263,7 @@ class Orchestrator:
             try:
                 tracer.close()
             finally:
-                if self._owns_ledger:
+                if owns_ledger:
                     self.ledger.close()
 
         return RunResult(
