@@ -330,7 +330,8 @@ conductor run --provider local --model qwen2.5:3b-instruct --task "..."
 ## Known limitations (tracked, not hidden)
 
 A whole-codebase review surfaced these; the correctness ones are fixed, the rest
-are acknowledged rather than papered over:
+are triaged as open [GitHub issues](https://github.com/akagifreeez/conductor/issues)
+(security / tests / tech-debt / packaging) rather than papered over:
 
 - **Replay does not re-apply a budget.** A run that ended `budget_exceeded`
   replays without the ceiling, so its status differs — the comparison now
